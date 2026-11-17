@@ -77,6 +77,36 @@ export function cigaretteEquivalent(pm25) {
 }
 
 /**
+ * True when a window starting at `iso` and lasting `length` hours lies within daytime.
+ * @param {string} iso
+ * @param {number} length
+ * @param {number} startHour
+ * @param {number} endHour
+ * @returns {boolean}
+ */
+function isDaytimeWindow(iso, length, startHour, endHour) {
+  const hourStart = new Date(iso).getHours();
+  return !Number.isNaN(hourStart) && hourStart >= startHour && hourStart + length <= endHour + 1;
+}
+
+/**
+ * Pick up to `limit` non-overlapping candidates (input sorted cleanest first).
+ * @template {{index:number}} T
+ * @param {T[]} sorted
+ * @param {number} length window length in hours
+ * @param {number} limit
+ * @returns {T[]}
+ */
+function pickNonOverlapping(sorted, length, limit) {
+  const chosen = [];
+  for (const candidate of sorted) {
+    if (chosen.length >= limit) break;
+    if (chosen.every((p) => Math.abs(p.index - candidate.index) >= length)) chosen.push(candidate);
+  }
+  return chosen;
+}
+
+/**
  * Find the cleanest continuous window of `length` hours within daytime hours.
  * @param {string[]} times ISO local timestamps (e.g. "2026-11-17T06:00")
  * @param {number[]} values AQI values aligned with `times`
@@ -91,22 +121,13 @@ export function bestWindows(times, values, opts = {}) {
   const candidates = [];
   for (let i = 0; i + length <= times.length; i += 1) {
     const slice = values.slice(i, i + length);
-    if (!slice.every(isFiniteNumber)) continue;
-    const hourStart = new Date(times[i]).getHours();
-    const hourEnd = hourStart + length;
-    if (Number.isNaN(hourStart) || hourStart < startHour || hourEnd > endHour + 1) continue;
-    const average = slice.reduce((a, b) => a + b, 0) / length;
-    candidates.push({ index: i, start: times[i], end: times[i + length - 1], average: Math.round(average) });
+    if (slice.every(isFiniteNumber) && isDaytimeWindow(times[i], length, startHour, endHour)) {
+      const average = Math.round(slice.reduce((a, b) => a + b, 0) / length);
+      candidates.push({ index: i, start: times[i], end: times[i + length - 1], average });
+    }
   }
   candidates.sort((a, b) => a.average - b.average || a.index - b.index);
-
-  // Pick non-overlapping windows.
-  const chosen = [];
-  for (const c of candidates) {
-    if (chosen.every((p) => Math.abs(p.index - c.index) >= length)) chosen.push(c);
-    if (chosen.length >= limit) break;
-  }
-  return chosen.map(({ start, end, average }) => ({ start, end, average }));
+  return pickNonOverlapping(candidates, length, limit).map(({ start, end, average }) => ({ start, end, average }));
 }
 
 /**
