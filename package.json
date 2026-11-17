@@ -1,0 +1,17 @@
+{
+  "name": "breathewise",
+  "version": "1.0.0",
+  "description": "GenAI Urban Air Quality Assistant: live AQI, personalised low-emission routines, indoor air hacks and quantified impact for families facing winter smog.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:coverage": "node --test --experimental-test-coverage tests/*.test.js",
+    "lint": "npx --yes eslint@9 .",
+    "start": "npx --yes serve@14 -l 8080 ."
+  }
+}
