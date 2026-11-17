@@ -5,6 +5,8 @@
  * @module impact
  */
 
+import { CARBON } from './config.js';
+
 /** Approximate tailpipe/lifecycle CO₂ per passenger-km (kg), India-centric averages. */
 export const COMMUTE_EMISSIONS = Object.freeze({
   car: { label: 'Petrol/diesel car', kgPerKm: 0.17 },
@@ -41,9 +43,8 @@ export function commuteSavings(fromMode, toMode, oneWayKm, daysPerWeek = 5) {
   const km = Math.max(0, Math.min(Number(oneWayKm) || 0, 200));
   const days = Math.max(0, Math.min(Number(daysPerWeek) || 0, 7));
   const weeklyKg = Math.max(0, (from.kgPerKm - to.kgPerKm) * km * 2 * days);
-  const yearlyKg = weeklyKg * 48;
-  // A mature tree absorbs ~21 kg CO₂ per year.
-  return { weeklyKg: round1(weeklyKg), yearlyKg: Math.round(yearlyKg), treesEquivalent: Math.round(yearlyKg / 21) };
+  const yearlyKg = weeklyKg * CARBON.workingWeeksPerYear;
+  return { weeklyKg: round1(weeklyKg), yearlyKg: Math.round(yearlyKg), treesEquivalent: Math.round(yearlyKg / CARBON.kgPerTreePerYear) };
 }
 
 /**
