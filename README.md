@@ -42,12 +42,21 @@ index.html ── src/app.js (controller)
                ├── src/aqi.js       EPA AQI categories, PM2.5→AQI, best windows, forecast summary
                ├── src/impact.js    CO₂ savings, indoor PM2.5 model, exposure-dose reduction
                ├── src/validate.js  input sanitisation & whitelisting
+               ├── src/format.js    shared pure formatters (hours, units)
+               ├── src/config.js    every limit, timeout and constant in one frozen module
                └── src/ui.js        safe DOM rendering (textContent only), SVG chart
 ```
 
-There's no framework and no build step: it's about 1,100 lines of vanilla ES modules, zero runtime dependencies, and the repo is under 100 KB.
+There's no framework and no build step: it's about 1,300 lines of vanilla ES modules, zero runtime dependencies, and the repo is under 100 KB.
 
 ## Evaluation criteria: how they're covered
+
+### Code quality
+- **Single-responsibility modules**: data/network, prompt + parsing, domain maths, validation, formatting, rendering and the controller are each kept in a separate module. Pure logic has no DOM access.
+- **No magic numbers.** Every timeout, limit and constant lives in a frozen `src/config.js`.
+- **Small functions**: ESLint enforces cyclomatic complexity ≤ 12, max depth 3, ≤ 4 params and ≤ 60 lines per function. The plan generator and offline planner are split into focused helpers (`loadContext`, `requestPlan`, `buildRoutine`, `buildIndoorHacks`, `buildSwaps` and others).
+- **JSDoc on every function**, with type-checking enabled through `jsconfig.json` (`checkJs`).
+- Consistent formatting via `.editorconfig`; `no-shadow`, `eqeqeq`, `prefer-const` and `no-console` are enforced.
 
 ### Security
 - **Strict Content-Security-Policy**: `script-src 'self'`, no inline scripts or styles, `connect-src` limited to the 5 required APIs, `object-src 'none'`, `base-uri 'none'`.
@@ -63,7 +72,7 @@ There's no framework and no build step: it's about 1,100 lines of vanilla ES mod
 - The chat sends only the last 6 turns to keep prompts small.
 
 ### Testing
-- **29 unit tests** using Node's built-in `node:test`, with no dependencies to install. Line coverage is about **99.8%**.
+- **35 unit tests** using Node's built-in `node:test`, with no dependencies to install. Line coverage is about **99.8%** and function coverage about **98.5%**.
 - They cover AQI breakpoints, forecast windows, impact maths, validation and injection cases, prompt building, JSON parsing of malformed or hostile output, the offline planner, and API clients with mocked `fetch`, including timeouts and HTTP errors.
 - GitHub Actions CI runs the tests and ESLint on every push.
 
