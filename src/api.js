@@ -5,6 +5,7 @@
  * @module api
  */
 import { isValidCoordinate, validateCityQuery } from './validate.js';
+import { NETWORK } from './config.js';
 
 export const ENDPOINTS = Object.freeze({
   geocode: 'https://geocoding-api.open-meteo.com/v1/search',
@@ -13,9 +14,6 @@ export const ENDPOINTS = Object.freeze({
   pollinations: 'https://text.pollinations.ai/openai',
   gemini: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
 });
-
-const DEFAULT_TIMEOUT = 15000;
-const AI_TIMEOUT = 45000;
 
 /** Simple in-memory TTL cache (keyed by URL). */
 export class TtlCache {
@@ -38,11 +36,11 @@ export class TtlCache {
 
   set(key, value, now = Date.now()) {
     this.store.set(key, { value, expires: now + this.ttlMs });
-    if (this.store.size > 50) this.store.delete(this.store.keys().next().value);
+    if (this.store.size > NETWORK.cacheMaxEntries) this.store.delete(this.store.keys().next().value);
   }
 }
 
-const cache = new TtlCache(10 * 60 * 1000);
+const cache = new TtlCache(NETWORK.cacheTtlMs);
 
 /**
  * fetch() with timeout and JSON parsing.
@@ -51,7 +49,7 @@ const cache = new TtlCache(10 * 60 * 1000);
  * @returns {Promise<any>}
  */
 export async function fetchJson(url, options = {}) {
-  const { timeout = DEFAULT_TIMEOUT, fetchImpl = globalThis.fetch, ...init } = options;
+  const { timeout = NETWORK.requestTimeoutMs, fetchImpl = globalThis.fetch, ...init } = options;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
@@ -83,7 +81,7 @@ async function cachedJson(url, fetchImpl) {
 export async function geocodeCity(query, fetchImpl) {
   const q = validateCityQuery(query);
   if (!q) throw new Error('Please enter a valid city name (letters only).');
-  const params = new URLSearchParams({ name: q, count: '5', language: 'en', format: 'json' });
+  const params = new URLSearchParams({ name: q, count: String(NETWORK.geocodeResults), language: 'en', format: 'json' });
   const data = await cachedJson(`${ENDPOINTS.geocode}?${params}`, fetchImpl);
   return (data.results ?? [])
     .filter((r) => isValidCoordinate(r.latitude, r.longitude))
@@ -107,7 +105,7 @@ export async function fetchConditions(lat, lon, fetchImpl) {
     ...coords,
     current: 'us_aqi,pm2_5,pm10,nitrogen_dioxide,ozone',
     hourly: 'us_aqi,pm2_5',
-    forecast_days: '2',
+    forecast_days: String(NETWORK.forecastDays),
   });
   const weatherParams = new URLSearchParams({ ...coords, current: 'temperature_2m,wind_speed_10m' });
   const [air, weather] = await Promise.all([
@@ -148,7 +146,7 @@ export async function askModel(messages, opts = {}) {
     }));
     const data = await fetchJson(ENDPOINTS.gemini, {
       method: 'POST',
-      timeout: AI_TIMEOUT,
+      timeout: NETWORK.aiTimeoutMs,
       fetchImpl,
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
       body: JSON.stringify({
@@ -162,7 +160,7 @@ export async function askModel(messages, opts = {}) {
   }
   const data = await fetchJson(ENDPOINTS.pollinations, {
     method: 'POST',
-    timeout: AI_TIMEOUT,
+    timeout: NETWORK.aiTimeoutMs,
     fetchImpl,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'openai', messages, private: true, ...(json ? { response_format: { type: 'json_object' } } : {}) }),
