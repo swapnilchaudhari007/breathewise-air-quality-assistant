@@ -93,6 +93,39 @@ export async function geocodeCity(query, fetchImpl) {
 }
 
 /**
+ * Round a number, keeping missing values as undefined.
+ * @param {number|null|undefined} value
+ * @returns {number|undefined}
+ */
+const roundOrUndefined = (value) => (value === null || value === undefined ? undefined : Math.round(value));
+
+/**
+ * Normalise Open-Meteo "current" air-quality fields.
+ * @param {Record<string, number>} c
+ * @returns {{aqi:number, pm25:number, pm10?:number, no2?:number, o3?:number}}
+ */
+export function normalizeAir(c) {
+  return {
+    aqi: Math.round(c.us_aqi ?? 0),
+    pm25: Math.round((c.pm2_5 ?? 0) * 10) / 10,
+    pm10: roundOrUndefined(c.pm10),
+    no2: roundOrUndefined(c.nitrogen_dioxide),
+    o3: roundOrUndefined(c.ozone),
+  };
+}
+
+/**
+ * Normalise Open-Meteo "current" weather fields.
+ * @param {Record<string, number>|undefined} current
+ * @returns {{temperature?:number, wind?:number}}
+ */
+export function normalizeWeather(current) {
+  return current
+    ? { temperature: Math.round(current.temperature_2m), wind: Math.round(current.wind_speed_10m) }
+    : {};
+}
+
+/**
  * Fetch current air quality, a 48-hour hourly AQI forecast and current weather.
  * @param {number} lat
  * @param {number} lon
@@ -112,19 +145,10 @@ export async function fetchConditions(lat, lon, fetchImpl) {
     cachedJson(`${ENDPOINTS.air}?${airParams}`, fetchImpl),
     cachedJson(`${ENDPOINTS.weather}?${weatherParams}`, fetchImpl).catch(() => null),
   ]);
-  const c = air.current ?? {};
   return {
-    air: {
-      aqi: Math.round(c.us_aqi ?? 0),
-      pm25: Math.round((c.pm2_5 ?? 0) * 10) / 10,
-      pm10: c.pm10 != null ? Math.round(c.pm10) : undefined,
-      no2: c.nitrogen_dioxide != null ? Math.round(c.nitrogen_dioxide) : undefined,
-      o3: c.ozone != null ? Math.round(c.ozone) : undefined,
-    },
+    air: normalizeAir(air.current ?? {}),
     hourly: { time: air.hourly?.time ?? [], aqi: air.hourly?.us_aqi ?? [] },
-    weather: weather?.current
-      ? { temperature: Math.round(weather.current.temperature_2m), wind: Math.round(weather.current.wind_speed_10m) }
-      : {},
+    weather: normalizeWeather(weather?.current),
   };
 }
 
@@ -138,26 +162,47 @@ export async function fetchConditions(lat, lon, fetchImpl) {
  */
 export async function askModel(messages, opts = {}) {
   const { geminiKey, fetchImpl, json = true } = opts;
-  if (geminiKey) {
-    const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
-    const contents = messages.filter((m) => m.role !== 'system').map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
-    }));
-    const data = await fetchJson(ENDPOINTS.gemini, {
-      method: 'POST',
-      timeout: NETWORK.aiTimeoutMs,
-      fetchImpl,
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: system }] },
-        contents,
-        generationConfig: { temperature: 0.6, ...(json ? { responseMimeType: 'application/json' } : {}) },
-      }),
-    });
-    const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') ?? '';
-    return { text, provider: 'Google Gemini 2.5 Flash' };
-  }
+  return geminiKey
+    ? askGemini(messages, geminiKey, { fetchImpl, json })
+    : askPollinations(messages, { fetchImpl, json });
+}
+
+/**
+ * Call Google Gemini (generateContent) with the user's own API key.
+ * The key is sent in a header, never in the URL.
+ * @param {{role:string, content:string}[]} messages
+ * @param {string} geminiKey
+ * @param {{fetchImpl?:typeof fetch, json:boolean}} opts
+ * @returns {Promise<{text:string, provider:string}>}
+ */
+async function askGemini(messages, geminiKey, { fetchImpl, json }) {
+  const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
+  const contents = messages.filter((m) => m.role !== 'system').map((m) => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }],
+  }));
+  const data = await fetchJson(ENDPOINTS.gemini, {
+    method: 'POST',
+    timeout: NETWORK.aiTimeoutMs,
+    fetchImpl,
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: system }] },
+      contents,
+      generationConfig: { temperature: 0.6, ...(json ? { responseMimeType: 'application/json' } : {}) },
+    }),
+  });
+  const parts = data.candidates?.[0]?.content?.parts ?? [];
+  return { text: parts.map((p) => p.text).join(''), provider: 'Google Gemini 2.5 Flash' };
+}
+
+/**
+ * Call the free, key-less Pollinations OpenAI-compatible endpoint.
+ * @param {{role:string, content:string}[]} messages
+ * @param {{fetchImpl?:typeof fetch, json:boolean}} opts
+ * @returns {Promise<{text:string, provider:string}>}
+ */
+async function askPollinations(messages, { fetchImpl, json }) {
   const data = await fetchJson(ENDPOINTS.pollinations, {
     method: 'POST',
     timeout: NETWORK.aiTimeoutMs,
