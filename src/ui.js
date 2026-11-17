@@ -4,8 +4,19 @@
  * @module ui
  */
 import { categorize } from './aqi.js';
+import { formatHour } from './format.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** Forecast chart geometry (SVG user units) and axis settings. */
+const CHART = Object.freeze({
+  width: 720,
+  height: 220,
+  pad: Object.freeze({ top: 16, right: 8, bottom: 30, left: 36 }),
+  minScale: 200,
+  labelEvery: 3,
+  ticks: Object.freeze([50, 100, 150, 200]),
+});
 
 /**
  * Create an element with attributes and children.
@@ -27,9 +38,6 @@ function svg(tag, attrs = {}) {
   return node;
 }
 
-/** Format an ISO timestamp as a short local hour, e.g. "7 am". */
-export const hour = (iso) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', hour12: true });
-
 /**
  * Render an accessible SVG bar chart of hourly AQI plus a screen-reader table.
  * @param {HTMLElement} container
@@ -41,10 +49,8 @@ export function renderForecastChart(container, points) {
     container.append(el('p', {}, ['Forecast unavailable for this location.']));
     return;
   }
-  const width = 720;
-  const height = 220;
-  const pad = { top: 16, right: 8, bottom: 30, left: 36 };
-  const max = Math.max(200, ...points.map((p) => p.aqi));
+  const { width, height, pad, minScale, labelEvery } = CHART;
+  const max = Math.max(minScale, ...points.map((p) => p.aqi));
   const barW = (width - pad.left - pad.right) / points.length;
   const y = (v) => pad.top + (height - pad.top - pad.bottom) * (1 - v / max);
 
@@ -55,7 +61,7 @@ export function renderForecastChart(container, points) {
   desc.textContent = `AQI ranges from ${Math.min(...points.map((p) => p.aqi))} to ${Math.max(...points.map((p) => p.aqi))}.`;
   chart.append(title, desc);
 
-  for (const tick of [50, 100, 150, 200].filter((t) => t <= max)) {
+  for (const tick of CHART.ticks.filter((t) => t <= max)) {
     chart.append(svg('line', { x1: pad.left, x2: width - pad.right, y1: y(tick), y2: y(tick), class: 'grid' }));
     const label = svg('text', { x: pad.left - 6, y: y(tick) + 4, 'text-anchor': 'end', class: 'axis' });
     label.textContent = String(tick);
@@ -65,12 +71,12 @@ export function renderForecastChart(container, points) {
     const x = pad.left + i * barW + 2;
     const bar = svg('rect', { x, y: y(p.aqi), width: Math.max(1, barW - 4), height: y(0) - y(p.aqi), rx: 3, fill: categorize(p.aqi).color });
     const tip = svg('title');
-    tip.textContent = `${hour(p.time)}: AQI ${p.aqi} (${categorize(p.aqi).label})`;
+    tip.textContent = `${formatHour(p.time)}: AQI ${p.aqi} (${categorize(p.aqi).label})`;
     bar.append(tip);
     chart.append(bar);
-    if (i % 3 === 0) {
+    if (i % labelEvery === 0) {
       const label = svg('text', { x: x + barW / 2 - 2, y: height - 10, 'text-anchor': 'middle', class: 'axis' });
-      label.textContent = hour(p.time);
+      label.textContent = formatHour(p.time);
       chart.append(label);
     }
   });
@@ -78,7 +84,7 @@ export function renderForecastChart(container, points) {
   const table = el('table', { class: 'visually-hidden' }, [
     el('caption', {}, ['Hourly AQI forecast']),
     el('thead', {}, [el('tr', {}, [el('th', { scope: 'col' }, ['Time']), el('th', { scope: 'col' }, ['AQI'])])]),
-    el('tbody', {}, points.map((p) => el('tr', {}, [el('td', {}, [hour(p.time)]), el('td', {}, [`${p.aqi} ${categorize(p.aqi).label}`])]))),
+    el('tbody', {}, points.map((p) => el('tr', {}, [el('td', {}, [formatHour(p.time)]), el('td', {}, [`${p.aqi} ${categorize(p.aqi).label}`])]))),
   ]);
   container.append(chart, table);
 }
