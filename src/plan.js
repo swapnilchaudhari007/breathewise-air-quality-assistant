@@ -1,31 +1,39 @@
 /**
- * Plan building: the GenAI prompt, a strict parser/validator for model output,
- * and a deterministic rule-based planner used as an offline fallback.
+ * GenAI plan contract: the grounded prompt builders and a strict
+ * parser/validator for model output. The offline fallback planner lives in
+ * `offline-plan.js`.
  * @module plan
  */
 import { categorize, cigaretteEquivalent } from './aqi.js';
-import { commuteSavings, estimateIndoorPm25, exposureReduction, COMMUTE_EMISSIONS } from './impact.js';
+import { COMMUTE_EMISSIONS } from './impact.js';
 import { sanitizeText } from './validate.js';
 import { formatHour } from './format.js';
 import { LIMITS } from './config.js';
 
 /** Sections every plan must contain. */
-export const PLAN_SECTIONS = Object.freeze(['routine', 'indoor', 'alternatives']);
-const MAX_ITEMS = LIMITS.planItems;
+export const PLAN_SECTIONS = Object.freeze(/** @type {const} */ (['routine', 'indoor', 'alternatives']));
 
-/** AQI above which outdoor exercise should move indoors. */
-const SEVERE_AQI = 150;
+/** Impact text used when the model omits one. */
+const DEFAULT_IMPACT = 'Reduces your exposure to polluted air.';
 
 /**
  * @typedef {{title:string, action:string, impact:string}} PlanItem
- * @typedef {{summary:string, routine:PlanItem[], indoor:PlanItem[], alternatives:PlanItem[], source:'ai'|'offline'}} Plan
+ * @typedef {{
+ *   summary:string,
+ *   routine:PlanItem[],
+ *   indoor:PlanItem[],
+ *   alternatives:PlanItem[],
+ *   source:'ai'|'offline'
+ * }} Plan
+ * @typedef {{start:string, end:string, average:number}} CleanWindow
  * @typedef {{
  *   place:string,
- *   air:{aqi:number, pm25:number, pm10?:number, no2?:number, o3?:number},
- *   forecast:{min:number, max:number, peakTime:string|null, best:{start:string,end:string,average:number}[]},
- *   weather?:{temperature?:number, wind?:number},
- *   profile:ReturnType<import('./validate.js').validateProfile>
+ *   air:import('./api.js').AirReading,
+ *   forecast:{min:number, max:number, peakTime:string|null, best:CleanWindow[]},
+ *   weather?:import('./api.js').WeatherReading,
+ *   profile:import('./validate.js').Profile
  * }} PlanContext
+ * @typedef {{role:'system'|'user'|'assistant', content:string}} ChatMessage
  */
 
 /**
@@ -60,7 +68,7 @@ const PERSONA = [
  * Build chat messages for the LLM. User-supplied free text is fenced and
  * explicitly marked as data to mitigate prompt injection.
  * @param {PlanContext} ctx
- * @returns {{role:'system'|'user', content:string}[]}
+ * @returns {ChatMessage[]}
  */
 export function buildPlanMessages(ctx) {
   const system = [
@@ -71,25 +79,31 @@ export function buildPlanMessages(ctx) {
     'routine = low-emission daily routine timed to the forecast; indoor = indoor air quality hacks; alternatives = sustainable lifestyle swaps that cut emissions.',
     '3-4 items per section. Titles under 8 words, action under 40 words, impact under 30 words.',
   ].join('\n');
-  return [{ role: 'system', content: system }, { role: 'user', content: describeContext(ctx) }];
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: describeContext(ctx) },
+  ];
 }
 
 /**
  * Build messages for a follow-up question, grounded in the same context.
  * @param {PlanContext} ctx
- * @param {{role:'user'|'assistant', content:string}[]} history previous turns (latest last)
- * @returns {{role:string, content:string}[]}
+ * @param {import('./state.js').ChatTurn[]} history previous turns (latest last)
+ * @returns {ChatMessage[]}
  */
 export function buildChatMessages(ctx, history) {
   const system = [
     PERSONA,
-    'Answer the family\'s follow-up question in plain text (no markdown), under 120 words, tailored to their household and today\'s air.',
+    "Answer the family's follow-up question in plain text (no markdown), under 120 words, tailored to their household and today's air.",
     'Context:',
     describeContext(ctx),
   ].join('\n');
   const turns = history.slice(-LIMITS.chatHistory).map((m) => ({
     role: m.role,
-    content: m.role === 'user' ? `<question>${stripTags(sanitizeText(m.content, LIMITS.question))}</question>` : sanitizeText(m.content, LIMITS.answer),
+    content:
+      m.role === 'user'
+        ? `<question>${stripTags(sanitizeText(m.content, LIMITS.question))}</question>`
+        : sanitizeText(m.content, LIMITS.answer),
   }));
   return [{ role: 'system', content: system }, ...turns];
 }
@@ -102,7 +116,10 @@ export function buildChatMessages(ctx, history) {
 export function describeContext(ctx) {
   const { air, forecast, weather = {}, profile } = ctx;
   const cat = categorize(air.aqi);
-  const best = forecast.best.map((w) => `${formatHour(w.start)}–${formatHour(w.end)} (avg AQI ${w.average})`).join('; ') || 'none identified';
+  const best =
+    forecast.best
+      .map((w) => `${formatHour(w.start)}–${formatHour(w.end)} (avg AQI ${w.average})`)
+      .join('; ') || 'none identified';
   return [
     `Location: ${sanitizeText(ctx.place, LIMITS.place)}`,
     `Current US AQI: ${air.aqi} (${cat.label}); PM2.5 ${air.pm25} µg/m³ (≈${cigaretteEquivalent(air.pm25)} cigarettes/day); PM10 ${air.pm10 ?? 'n/a'}; NO2 ${air.no2 ?? 'n/a'}; O3 ${air.o3 ?? 'n/a'}.`,
@@ -122,135 +139,57 @@ export function describeContext(ctx) {
  */
 function cleanItem(item) {
   if (!item || typeof item !== 'object') return null;
-  const title = sanitizeText(item.title, 80);
-  const action = sanitizeText(item.action, 400);
-  const impact = sanitizeText(item.impact, 300);
-  return title && action ? { title, action, impact: impact || 'Reduces your exposure to polluted air.' } : null;
+  const raw = /** @type {Record<string, unknown>} */ (item);
+  const title = sanitizeText(raw.title, LIMITS.itemTitle);
+  const action = sanitizeText(raw.action, LIMITS.itemAction);
+  const impact = sanitizeText(raw.impact, LIMITS.itemImpact) || DEFAULT_IMPACT;
+  return title && action ? { title, action, impact } : null;
+}
+
+/**
+ * Clean one plan section, keeping at most `LIMITS.planItems` valid items.
+ * @param {unknown} list
+ * @returns {PlanItem[]}
+ */
+function cleanSection(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map(cleanItem)
+    .filter((item) => item !== null)
+    .slice(0, LIMITS.planItems);
+}
+
+/**
+ * Extract and parse the outermost JSON object in a string.
+ * @param {string} text
+ * @returns {Record<string, unknown>|null}
+ */
+function extractJson(text) {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  try {
+    const data = JSON.parse(text.slice(start, end + 1));
+    return data && typeof data === 'object' ? data : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Parse raw model text into a validated Plan. Tolerates code fences and
  * surrounding prose; returns null when the output is unusable.
- * @param {string} text
+ * @param {unknown} text
  * @returns {Plan|null}
  */
 export function parsePlan(text) {
   if (typeof text !== 'string') return null;
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end <= start) return null;
-  let data;
-  try {
-    data = JSON.parse(text.slice(start, end + 1));
-  } catch {
-    return null;
-  }
-  const plan = { summary: sanitizeText(data.summary, 600), source: 'ai' };
-  for (const section of PLAN_SECTIONS) {
-    const list = Array.isArray(data[section]) ? data[section] : [];
-    plan[section] = list.map(cleanItem).filter(Boolean).slice(0, MAX_ITEMS);
-    if (plan[section].length === 0) return null;
-  }
-  if (!plan.summary) return null;
-  return plan;
-}
-
-/**
- * Daily PM2.5 dose reduction from following the plan versus current habits.
- * @param {PlanContext} ctx
- * @returns {ReturnType<typeof exposureReduction>}
- */
-function planReduction({ air, profile }) {
-  return exposureReduction(
-    air.pm25,
-    { outdoorHours: 3, mask: 'none', windows: profile.home.windows, purifier: profile.home.purifier },
-    { outdoorHours: air.aqi > SEVERE_AQI ? 1 : 2, mask: 'n95', windows: 'closed', purifier: true },
-  );
-}
-
-/**
- * Low-emission daily routine timed to the forecast.
- * @param {PlanContext} ctx
- * @returns {PlanItem[]}
- */
-function buildRoutine(ctx) {
-  const { air, forecast, profile } = ctx;
-  const cat = categorize(air.aqi);
-  const best = forecast.best[0];
-  const severe = air.aqi > SEVERE_AQI;
-  const { household } = profile;
-  const sensitive = household.children || household.elderly || household.respiratory;
-  const reduction = planReduction(ctx);
-  const routine = [
-    best
-      ? { title: `Go outside ${formatHour(best.start)}–${formatHour(best.end)}`, action: `Schedule walks, school runs and exercise in the cleanest window (avg AQI ${best.average}) and avoid the peak around ${formatHour(forecast.peakTime)}.`, impact: `Breathing AQI ${best.average} instead of ${forecast.max} cuts pollutant intake during outdoor time by ~${Math.max(0, Math.round((1 - best.average / Math.max(forecast.max, 1)) * 100))}%.` }
-      : { title: 'Limit time outdoors', action: 'No clean window today — keep outdoor trips short and essential.', impact: 'Every hour indoors with filtered air avoids a full hour of outdoor PM2.5.' },
-    { title: 'Wear a fitted N95 outdoors', action: 'Use N95/FFP2 masks (not cloth) for commutes and errands; check the seal around the nose.', impact: `Combined with the steps below, your family's daily PM2.5 dose drops by ~${reduction.reductionPercent}%.` },
-    profile.lifestyle.exercise !== 'none'
-      ? { title: 'Move workouts indoors', action: severe ? 'Switch running and cycling to indoor yoga or bodyweight workouts until AQI falls below 100.' : 'Exercise lightly outdoors only in the clean window; heavy breathing multiplies intake.', impact: 'Intense exercise raises breathing rate up to 10×, so moving it indoors avoids most of that extra dose.' }
-      : { title: 'Plan errands smartly', action: 'Batch shopping and errands into a single trip during the clean window.', impact: 'Fewer trips mean less exposure and fewer vehicle emissions.' },
-  ];
-  if (sensitive) {
-    routine.push({ title: 'Protect vulnerable members', action: 'Keep children, elders and anyone with asthma indoors during peak hours; keep inhalers handy and seek a doctor if breathing worsens.', impact: `${cat.label} air hits sensitive lungs first — staying in reduces their dose most.` });
-  }
-  return routine;
-}
-
-/**
- * Indoor air-quality hacks with estimated indoor PM2.5 impact.
- * @param {PlanContext} ctx
- * @returns {PlanItem[]}
- */
-function buildIndoorHacks({ air, forecast, profile }) {
-  const best = forecast.best[0];
-  const indoorNow = estimateIndoorPm25(air.pm25, { windows: profile.home.windows, purifier: profile.home.purifier });
-  const indoorBetter = estimateIndoorPm25(air.pm25, { windows: 'closed', purifier: true });
-  return [
-    { title: profile.home.windows === 'open' ? 'Close windows at peak hours' : 'Keep windows closed', action: `Ventilate only for 10–15 minutes during ${best ? formatHour(best.start) : 'the cleanest hour'}; seal gaps with door snakes or weather strips.`, impact: `Lowers indoor PM2.5 from ~${indoorNow} to ~${estimateIndoorPm25(air.pm25, { windows: 'closed', purifier: profile.home.purifier })} µg/m³.` },
-    { title: profile.home.purifier ? 'Run purifier on high' : 'Add a HEPA filter (DIY works)', action: profile.home.purifier ? 'Keep the purifier in the bedroom at night, doors closed, and change filters on schedule.' : 'Strap a MERV-13 filter to a box fan (a ~₹2,500 DIY purifier) and run it in the room where you sleep.', impact: `A HEPA/MERV-13 filter brings indoor PM2.5 to ~${indoorBetter} µg/m³ (≈${cigaretteEquivalent(indoorBetter)} cigarettes/day instead of ${cigaretteEquivalent(indoorNow)}).` },
-    { title: 'Cut indoor smoke sources', action: profile.lifestyle.cooking === 'biomass' ? 'Shift from wood/coal to LPG or induction; until then cook with the exhaust on and the door shut.' : 'Use the kitchen chimney/exhaust while cooking; avoid incense, mosquito coils and candles.', impact: 'Incense and frying can spike indoor PM2.5 above 300 µg/m³ for hours — removing them is a free, instant win.' },
-    { title: 'Wet-clean dust daily', action: 'Mop floors and wipe surfaces with a damp cloth instead of sweeping; keep shoes at the door.', impact: 'Wet cleaning traps settled particles instead of resuspending them into the air you breathe.' },
-  ];
-}
-
-/**
- * Sustainable lifestyle swaps, led by a quantified commute change.
- * @param {PlanContext['profile']} profile
- * @returns {PlanItem[]}
- */
-function buildSwaps(profile) {
-  const mode = profile.commute.mode;
-  const target = profile.commute.km <= 3 ? 'cycle' : 'metro';
-  const swaps = [];
-  if (COMMUTE_EMISSIONS[mode].kgPerKm > COMMUTE_EMISSIONS[target].kgPerKm) {
-    const s = commuteSavings(mode, target, profile.commute.km, 5);
-    swaps.push({ title: `Swap ${COMMUTE_EMISSIONS[mode].label.toLowerCase()} for ${COMMUTE_EMISSIONS[target].label.toLowerCase()}`, action: `Take ${COMMUTE_EMISSIONS[target].label.toLowerCase()} for your ${profile.commute.km} km commute, or work from home on severe-smog days.`, impact: `Saves ~${s.weeklyKg} kg CO₂ a week (${s.yearlyKg} kg/yr ≈ ${s.treesEquivalent} trees) and removes tailpipe emissions from your street.` });
-  } else {
-    swaps.push({ title: 'Keep your clean commute', action: 'Your commute is already low-emission — encourage colleagues to car-pool or use transit.', impact: 'Each car taken off the road avoids ~3.4 kg CO₂ per 20 km round trip.' });
-  }
-  swaps.push(
-    { title: 'Never burn waste or leaves', action: 'Compost kitchen and garden waste and report open burning in your area to the municipal helpline.', impact: 'Open burning is a major winter PM2.5 source; one pile can pollute a whole street for hours.' },
-    { title: 'Grow air-friendly greenery', action: 'Plant native trees or shrubs on balconies and society compounds; a green barrier helps beside busy roads.', impact: 'Roadside hedges can lower nearby particulate levels by up to ~20% while absorbing CO₂.' },
-    { title: 'Choose energy-efficient heating', action: 'Avoid coal/wood heaters; use efficient electric heaters with timers and seal drafts instead.', impact: 'Cuts household emissions and indoor smoke at the same time.' },
-  );
-  return swaps;
-}
-
-/**
- * Deterministic, rule-based plan — used when the AI is unreachable so the
- * family always receives useful, quantified guidance.
- * @param {PlanContext} ctx
- * @returns {Plan}
- */
-export function buildOfflinePlan(ctx) {
-  const { air } = ctx;
-  const cat = categorize(air.aqi);
-  const reduction = planReduction(ctx);
-  return {
-    summary: `Air in ${sanitizeText(ctx.place, LIMITS.place)} is ${cat.label.toLowerCase()} (AQI ${air.aqi}, PM2.5 ${air.pm25} µg/m³ ≈ ${cigaretteEquivalent(air.pm25)} cigarettes/day). ${cat.advice} Following this plan can cut your family's daily exposure by about ${reduction.reductionPercent}%.`,
-    routine: buildRoutine(ctx).slice(0, MAX_ITEMS),
-    indoor: buildIndoorHacks(ctx).slice(0, MAX_ITEMS),
-    alternatives: buildSwaps(ctx.profile).slice(0, MAX_ITEMS),
-    source: 'offline',
-  };
+  const data = extractJson(text);
+  if (!data) return null;
+  const summary = sanitizeText(data.summary, LIMITS.summary);
+  const routine = cleanSection(data.routine);
+  const indoor = cleanSection(data.indoor);
+  const alternatives = cleanSection(data.alternatives);
+  if (!summary || !routine.length || !indoor.length || !alternatives.length) return null;
+  return { summary, routine, indoor, alternatives, source: 'ai' };
 }

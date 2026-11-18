@@ -12,7 +12,7 @@ test('sanitizeText strips control chars, collapses whitespace and caps length', 
 
 test('validateCityQuery accepts real names in any script and rejects injection', () => {
   assert.equal(validateCityQuery('New Delhi'), 'New Delhi');
-  assert.equal(validateCityQuery("Saint-Étienne"), "Saint-Étienne");
+  assert.equal(validateCityQuery('Saint-Étienne'), 'Saint-Étienne');
   assert.equal(validateCityQuery('ठाणे'), 'ठाणे');
   assert.equal(validateCityQuery('<script>alert(1)</script>'), null);
   assert.equal(validateCityQuery('a'), null);
@@ -29,9 +29,17 @@ test('isValidCoordinate checks range and type', () => {
 
 test('validateProfile whitelists enums and applies safe defaults', () => {
   const p = validateProfile({
-    size: '999', children: true, elderly: 'yes', commuteMode: 'spaceship',
-    commuteKm: '-4', windows: 'closed', purifier: true, exercise: 'evening',
-    cooking: 'biomass', notes: '  near\u0000 highway  ', extra: 'ignored',
+    size: '999',
+    children: true,
+    elderly: 'yes',
+    commuteMode: 'spaceship',
+    commuteKm: '-4',
+    windows: 'closed',
+    purifier: true,
+    exercise: 'evening',
+    cooking: 'biomass',
+    notes: '  near\u0000 highway  ',
+    extra: 'ignored',
   });
   assert.equal(p.household.size, 20);
   assert.equal(p.household.children, true);

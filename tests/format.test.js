@@ -33,11 +33,20 @@ test('configuration is immutable and internally consistent', () => {
 });
 
 test('normalizeAir rounds values and keeps missing pollutants undefined', () => {
-  assert.deepEqual(normalizeAir({ us_aqi: 99.6, pm2_5: 12.34 }), { aqi: 100, pm25: 12.3, pm10: undefined, no2: undefined, o3: undefined });
+  assert.deepEqual(normalizeAir({ us_aqi: 99.6, pm2_5: 12.34 }), {
+    aqi: 100,
+    pm25: 12.3,
+    pm10: undefined,
+    no2: undefined,
+    o3: undefined,
+  });
   assert.deepEqual(normalizeAir({}), { aqi: 0, pm25: 0, pm10: undefined, no2: undefined, o3: undefined });
 });
 
 test('normalizeWeather handles present and missing data', () => {
-  assert.deepEqual(normalizeWeather({ temperature_2m: 21.6, wind_speed_10m: 3.2 }), { temperature: 22, wind: 3 });
+  assert.deepEqual(normalizeWeather({ temperature_2m: 21.6, wind_speed_10m: 3.2 }), {
+    temperature: 22,
+    wind: 3,
+  });
   assert.deepEqual(normalizeWeather(undefined), {});
 });

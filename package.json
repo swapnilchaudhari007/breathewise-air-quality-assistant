@@ -1,17 +1,36 @@
 {
   "name": "breathewise",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "GenAI Urban Air Quality Assistant: live AQI, personalised low-emission routines, indoor air hacks and quantified impact for families facing winter smog.",
   "type": "module",
   "private": true,
   "license": "MIT",
+  "author": "Swapnil Dinkar Chaudhari",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/swapnilchaudhari007/breathewise-air-quality-assistant.git"
+  },
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "test": "node --test tests/*.test.js",
     "test:coverage": "node --test --experimental-test-coverage tests/*.test.js",
-    "lint": "npx --yes eslint@9 .",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc -p jsconfig.json",
+    "check": "npm run lint && npm run format:check && npm run typecheck && npm test",
     "start": "npx --yes serve@14 -l 8080 ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@happy-dom/global-registrator": "^21.0.4",
+    "eslint": "^9.39.0",
+    "eslint-plugin-jsdoc": "^61.0.0",
+    "globals": "^16.0.0",
+    "prettier": "^3.6.0",
+    "typescript": "^5.9.0"
   }
 }

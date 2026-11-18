@@ -4,15 +4,52 @@
  * Pure functions only — safe to unit test in Node without a DOM.
  * @module aqi
  */
+import { HEALTH } from './config.js';
 
 /** US EPA AQI categories (index ranges are inclusive). */
 export const AQI_CATEGORIES = Object.freeze([
-  { max: 50, level: 'good', label: 'Good', color: '#1e7b3c', advice: 'Air quality is satisfactory. Enjoy outdoor activities.' },
-  { max: 100, level: 'moderate', label: 'Moderate', color: '#c9a400', advice: 'Unusually sensitive people should limit long outdoor exertion.' },
-  { max: 150, level: 'usg', label: 'Unhealthy for Sensitive Groups', color: '#c2410c', advice: 'Children, older adults and people with asthma or heart disease should reduce outdoor exertion.' },
-  { max: 200, level: 'unhealthy', label: 'Unhealthy', color: '#c5221f', advice: 'Everyone should reduce prolonged outdoor exertion; sensitive groups should stay indoors.' },
-  { max: 300, level: 'very-unhealthy', label: 'Very Unhealthy', color: '#8e3fa8', advice: 'Health alert: avoid outdoor activity and keep indoor air filtered.' },
-  { max: Infinity, level: 'hazardous', label: 'Hazardous', color: '#7e0023', advice: 'Emergency conditions: stay indoors with windows closed and air purifiers running.' },
+  {
+    max: 50,
+    level: 'good',
+    label: 'Good',
+    color: '#1e7b3c',
+    advice: 'Air quality is satisfactory. Enjoy outdoor activities.',
+  },
+  {
+    max: 100,
+    level: 'moderate',
+    label: 'Moderate',
+    color: '#c9a400',
+    advice: 'Unusually sensitive people should limit long outdoor exertion.',
+  },
+  {
+    max: 150,
+    level: 'usg',
+    label: 'Unhealthy for Sensitive Groups',
+    color: '#c2410c',
+    advice: 'Children, older adults and people with asthma or heart disease should reduce outdoor exertion.',
+  },
+  {
+    max: 200,
+    level: 'unhealthy',
+    label: 'Unhealthy',
+    color: '#c5221f',
+    advice: 'Everyone should reduce prolonged outdoor exertion; sensitive groups should stay indoors.',
+  },
+  {
+    max: 300,
+    level: 'very-unhealthy',
+    label: 'Very Unhealthy',
+    color: '#8e3fa8',
+    advice: 'Health alert: avoid outdoor activity and keep indoor air filtered.',
+  },
+  {
+    max: Infinity,
+    level: 'hazardous',
+    label: 'Hazardous',
+    color: '#7e0023',
+    advice: 'Emergency conditions: stay indoors with windows closed and air purifiers running.',
+  },
 ]);
 
 /**
@@ -44,7 +81,8 @@ export function categorize(aqi) {
   if (!isFiniteNumber(aqi) || aqi < 0) {
     throw new RangeError('AQI must be a non-negative finite number');
   }
-  return AQI_CATEGORIES.find((c) => Math.round(aqi) <= c.max);
+  const rounded = Math.round(aqi);
+  return AQI_CATEGORIES.find((c) => rounded <= c.max) ?? AQI_CATEGORIES[AQI_CATEGORIES.length - 1];
 }
 
 /**
@@ -58,8 +96,8 @@ export function pm25ToAqi(concentration) {
   }
   // EPA truncates PM2.5 to one decimal place before lookup.
   const c = Math.floor(concentration * 10) / 10;
-  const row = PM25_BREAKPOINTS.find(([lo, hi]) => c >= lo && c <= hi)
-    ?? PM25_BREAKPOINTS[PM25_BREAKPOINTS.length - 1];
+  const row =
+    PM25_BREAKPOINTS.find(([lo, hi]) => c >= lo && c <= hi) ?? PM25_BREAKPOINTS[PM25_BREAKPOINTS.length - 1];
   const [cLo, cHi, iLo, iHi] = row;
   const aqi = ((iHi - iLo) / (cHi - cLo)) * (Math.min(c, cHi) - cLo) + iLo;
   return Math.min(500, Math.round(aqi));
@@ -73,7 +111,7 @@ export function pm25ToAqi(concentration) {
  */
 export function cigaretteEquivalent(pm25) {
   if (!isFiniteNumber(pm25) || pm25 < 0) return 0;
-  return Math.round((pm25 / 22) * 10) / 10;
+  return Math.round((pm25 / HEALTH.pm25PerCigarette) * 10) / 10;
 }
 
 /**
@@ -107,6 +145,25 @@ function pickNonOverlapping(sorted, length, limit) {
 }
 
 /**
+ * Every fully-valued daytime window of `length` hours, with its average AQI.
+ * @param {string[]} times
+ * @param {number[]} values
+ * @param {{length:number, startHour:number, endHour:number}} opts
+ * @returns {{index:number, start:string, end:string, average:number}[]}
+ */
+function windowCandidates(times, values, { length, startHour, endHour }) {
+  const candidates = [];
+  for (let i = 0; i + length <= times.length; i += 1) {
+    const slice = values.slice(i, i + length);
+    if (slice.every(isFiniteNumber) && isDaytimeWindow(times[i], length, startHour, endHour)) {
+      const average = Math.round(slice.reduce((a, b) => a + b, 0) / length);
+      candidates.push({ index: i, start: times[i], end: times[i + length - 1], average });
+    }
+  }
+  return candidates;
+}
+
+/**
  * Find the cleanest continuous window of `length` hours within daytime hours.
  * @param {string[]} times ISO local timestamps (e.g. "2026-11-17T06:00")
  * @param {number[]} values AQI values aligned with `times`
@@ -118,16 +175,13 @@ export function bestWindows(times, values, opts = {}) {
   if (!Array.isArray(times) || !Array.isArray(values) || times.length !== values.length) {
     return [];
   }
-  const candidates = [];
-  for (let i = 0; i + length <= times.length; i += 1) {
-    const slice = values.slice(i, i + length);
-    if (slice.every(isFiniteNumber) && isDaytimeWindow(times[i], length, startHour, endHour)) {
-      const average = Math.round(slice.reduce((a, b) => a + b, 0) / length);
-      candidates.push({ index: i, start: times[i], end: times[i + length - 1], average });
-    }
-  }
+  const candidates = windowCandidates(times, values, { length, startHour, endHour });
   candidates.sort((a, b) => a.average - b.average || a.index - b.index);
-  return pickNonOverlapping(candidates, length, limit).map(({ start, end, average }) => ({ start, end, average }));
+  return pickNonOverlapping(candidates, length, limit).map(({ start, end, average }) => ({
+    start,
+    end,
+    average,
+  }));
 }
 
 /**
@@ -154,7 +208,7 @@ export function summarizeForecast(times, values, hours = 24, now = new Date()) {
     min: Math.min(...aqis),
     max,
     average: Math.round(aqis.reduce((a, b) => a + b, 0) / aqis.length),
-    peakTime: points.find((p) => p.aqi === max).time,
+    peakTime: points.find((p) => p.aqi === max)?.time ?? null,
     points,
   };
 }

@@ -9,14 +9,21 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Unit tests with coverage
-        run: npm run test:coverage
-      - name: Lint
+          cache: npm
+      - name: Install dev tools
+        run: npm ci
+      - name: Lint (ESLint + JSDoc rules)
         run: npm run lint
+      - name: Formatting (Prettier)
+        run: npm run format:check
+      - name: Type-check (tsc --checkJs)
+        run: npm run typecheck
+      - name: Unit + DOM integration tests with coverage
+        run: npm run test:coverage

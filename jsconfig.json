@@ -3,10 +3,19 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "bundler",
+    "allowJs": true,
     "checkJs": true,
     "strict": false,
+    "strictNullChecks": true,
+    "noImplicitThis": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
     "noEmit": true,
-    "lib": ["ES2022", "DOM"]
+    "skipLibCheck": true,
+    "types": [],
+    "maxNodeModuleJsDepth": 0,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["src/**/*.js", "tests/**/*.js"]
+  "include": ["src/**/*.js"]
 }

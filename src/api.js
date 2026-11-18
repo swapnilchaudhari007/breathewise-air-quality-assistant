@@ -5,14 +5,21 @@
  * @module api
  */
 import { isValidCoordinate, validateCityQuery } from './validate.js';
-import { NETWORK } from './config.js';
+import { AI, NETWORK } from './config.js';
+
+/**
+ * @typedef {{aqi:number, pm25:number, pm10?:number, no2?:number, o3?:number}} AirReading
+ * @typedef {{temperature?:number, wind?:number}} WeatherReading
+ * @typedef {{text:string, provider:string}} ModelReply
+ * @typedef {import('./plan.js').ChatMessage} ChatMessage
+ */
 
 export const ENDPOINTS = Object.freeze({
   geocode: 'https://geocoding-api.open-meteo.com/v1/search',
   air: 'https://air-quality-api.open-meteo.com/v1/air-quality',
   weather: 'https://api.open-meteo.com/v1/forecast',
   pollinations: 'https://text.pollinations.ai/openai',
-  gemini: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+  gemini: `https://generativelanguage.googleapis.com/v1beta/models/${AI.geminiModel}:generateContent`,
 });
 
 /** Simple in-memory TTL cache (keyed by URL). */
@@ -24,6 +31,11 @@ export class TtlCache {
     this.store = new Map();
   }
 
+  /**
+   * @param {string} key
+   * @param {number} [now]
+   * @returns {unknown} cached value, or undefined when missing or expired
+   */
   get(key, now = Date.now()) {
     const hit = this.store.get(key);
     if (!hit) return undefined;
@@ -34,6 +46,12 @@ export class TtlCache {
     return hit.value;
   }
 
+  /**
+   * Store a value, evicting the oldest entry when the cache is full.
+   * @param {string} key
+   * @param {unknown} value
+   * @param {number} [now]
+   */
   set(key, value, now = Date.now()) {
     this.store.set(key, { value, expires: now + this.ttlMs });
     if (this.store.size > NETWORK.cacheMaxEntries) this.store.delete(this.store.keys().next().value);
@@ -64,6 +82,12 @@ export async function fetchJson(url, options = {}) {
   }
 }
 
+/**
+ * GET JSON through the shared TTL cache.
+ * @param {string} url
+ * @param {typeof fetch} [fetchImpl]
+ * @returns {Promise<any>}
+ */
 async function cachedJson(url, fetchImpl) {
   const hit = cache.get(url);
   if (hit) return hit;
@@ -81,7 +105,12 @@ async function cachedJson(url, fetchImpl) {
 export async function geocodeCity(query, fetchImpl) {
   const q = validateCityQuery(query);
   if (!q) throw new Error('Please enter a valid city name (letters only).');
-  const params = new URLSearchParams({ name: q, count: String(NETWORK.geocodeResults), language: 'en', format: 'json' });
+  const params = new URLSearchParams({
+    name: q,
+    count: String(NETWORK.geocodeResults),
+    language: 'en',
+    format: 'json',
+  });
   const data = await cachedJson(`${ENDPOINTS.geocode}?${params}`, fetchImpl);
   return (data.results ?? [])
     .filter((r) => isValidCoordinate(r.latitude, r.longitude))
@@ -102,7 +131,7 @@ const roundOrUndefined = (value) => (value === null || value === undefined ? und
 /**
  * Normalise Open-Meteo "current" air-quality fields.
  * @param {Record<string, number>} c
- * @returns {{aqi:number, pm25:number, pm10?:number, no2?:number, o3?:number}}
+ * @returns {AirReading}
  */
 export function normalizeAir(c) {
   return {
@@ -117,7 +146,7 @@ export function normalizeAir(c) {
 /**
  * Normalise Open-Meteo "current" weather fields.
  * @param {Record<string, number>|undefined} current
- * @returns {{temperature?:number, wind?:number}}
+ * @returns {WeatherReading}
  */
 export function normalizeWeather(current) {
   return current
@@ -130,6 +159,7 @@ export function normalizeWeather(current) {
  * @param {number} lat
  * @param {number} lon
  * @param {typeof fetch} [fetchImpl]
+ * @returns {Promise<{air:AirReading, hourly:{time:string[], aqi:number[]}, weather:WeatherReading}>}
  */
 export async function fetchConditions(lat, lon, fetchImpl) {
   if (!isValidCoordinate(lat, lon)) throw new Error('Invalid coordinates.');
@@ -156,9 +186,9 @@ export async function fetchConditions(lat, lon, fetchImpl) {
  * Ask a GenAI model. Uses Google Gemini when the user supplies their own key
  * (kept only in memory), otherwise the free, key-less Pollinations
  * OpenAI-compatible endpoint.
- * @param {{role:string, content:string}[]} messages
+ * @param {ChatMessage[]} messages
  * @param {{geminiKey?:string, fetchImpl?:typeof fetch, json?:boolean}} [opts]
- * @returns {Promise<{text:string, provider:string}>}
+ * @returns {Promise<ModelReply>}
  */
 export async function askModel(messages, opts = {}) {
   const { geminiKey, fetchImpl, json = true } = opts;
@@ -170,17 +200,22 @@ export async function askModel(messages, opts = {}) {
 /**
  * Call Google Gemini (generateContent) with the user's own API key.
  * The key is sent in a header, never in the URL.
- * @param {{role:string, content:string}[]} messages
+ * @param {ChatMessage[]} messages
  * @param {string} geminiKey
  * @param {{fetchImpl?:typeof fetch, json:boolean}} opts
- * @returns {Promise<{text:string, provider:string}>}
+ * @returns {Promise<ModelReply>}
  */
 async function askGemini(messages, geminiKey, { fetchImpl, json }) {
-  const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
-  const contents = messages.filter((m) => m.role !== 'system').map((m) => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
-  }));
+  const system = messages
+    .filter((m) => m.role === 'system')
+    .map((m) => m.content)
+    .join('\n');
+  const contents = messages
+    .filter((m) => m.role !== 'system')
+    .map((m) => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }],
+    }));
   const data = await fetchJson(ENDPOINTS.gemini, {
     method: 'POST',
     timeout: NETWORK.aiTimeoutMs,
@@ -189,18 +224,21 @@ async function askGemini(messages, geminiKey, { fetchImpl, json }) {
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
       contents,
-      generationConfig: { temperature: 0.6, ...(json ? { responseMimeType: 'application/json' } : {}) },
+      generationConfig: {
+        temperature: AI.temperature,
+        ...(json ? { responseMimeType: 'application/json' } : {}),
+      },
     }),
   });
   const parts = data.candidates?.[0]?.content?.parts ?? [];
-  return { text: parts.map((p) => p.text).join(''), provider: 'Google Gemini 2.5 Flash' };
+  return { text: parts.map((p) => p.text).join(''), provider: AI.geminiLabel };
 }
 
 /**
  * Call the free, key-less Pollinations OpenAI-compatible endpoint.
- * @param {{role:string, content:string}[]} messages
+ * @param {ChatMessage[]} messages
  * @param {{fetchImpl?:typeof fetch, json:boolean}} opts
- * @returns {Promise<{text:string, provider:string}>}
+ * @returns {Promise<ModelReply>}
  */
 async function askPollinations(messages, { fetchImpl, json }) {
   const data = await fetchJson(ENDPOINTS.pollinations, {
@@ -208,7 +246,12 @@ async function askPollinations(messages, { fetchImpl, json }) {
     timeout: NETWORK.aiTimeoutMs,
     fetchImpl,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'openai', messages, private: true, ...(json ? { response_format: { type: 'json_object' } } : {}) }),
+    body: JSON.stringify({
+      model: AI.pollinationsModel,
+      messages,
+      private: true,
+      ...(json ? { response_format: { type: 'json_object' } } : {}),
+    }),
   });
-  return { text: data.choices?.[0]?.message?.content ?? '', provider: 'Pollinations (OpenAI-compatible LLM)' };
+  return { text: data.choices?.[0]?.message?.content ?? '', provider: AI.pollinationsLabel };
 }

@@ -13,7 +13,10 @@ test('commuteSavings computes weekly and yearly CO2 savings', () => {
 test('commuteSavings never reports negative savings and clamps inputs', () => {
   assert.equal(commuteSavings('walk', 'car', 10).weeklyKg, 0);
   assert.equal(commuteSavings('car', 'walk', -5).weeklyKg, 0);
-  assert.equal(commuteSavings('car', 'walk', 10_000, 99).weeklyKg, commuteSavings('car', 'walk', 200, 7).weeklyKg);
+  assert.equal(
+    commuteSavings('car', 'walk', 10_000, 99).weeklyKg,
+    commuteSavings('car', 'walk', 200, 7).weeklyKg,
+  );
   assert.throws(() => commuteSavings('rocket', 'walk', 5), RangeError);
 });
 

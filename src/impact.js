@@ -5,7 +5,7 @@
  * @module impact
  */
 
-import { CARBON } from './config.js';
+import { CARBON, PROFILE } from './config.js';
 
 /** Approximate tailpipe/lifecycle CO₂ per passenger-km (kg), India-centric averages. */
 export const COMMUTE_EMISSIONS = Object.freeze({
@@ -26,25 +26,49 @@ const INFILTRATION = Object.freeze({ open: 0.8, closed: 0.45, sealed: 0.3 });
 /** Fraction of PM2.5 a mask removes when worn correctly. */
 export const MASK_FILTRATION = Object.freeze({ none: 0, cloth: 0.3, surgical: 0.6, n95: 0.95 });
 
+/**
+ * Round to one decimal place.
+ * @param {number} n
+ * @returns {number}
+ */
 const round1 = (n) => Math.round(n * 10) / 10;
+
+/**
+ * Coerce to a number (non-numeric → 0) and clamp to [min, max].
+ * @param {unknown} value
+ * @param {number} min
+ * @param {number} max
+ * @returns {number}
+ */
+const clamp = (value, min, max) => Math.max(min, Math.min(Number(value) || 0, max));
+
+/** Hours in a day, for daily-dose calculations. */
+const DAY_HOURS = 24;
+
+/** Share of outdoor PM2.5 a purifier removes by default, and its upper bound. */
+const PURIFIER = Object.freeze({ defaultEfficiency: 0.5, maxEfficiency: 0.9 });
 
 /**
  * Weekly CO₂ saved by switching commute mode.
  * @param {string} fromMode key of COMMUTE_EMISSIONS
  * @param {string} toMode key of COMMUTE_EMISSIONS
  * @param {number} oneWayKm
- * @param {number} [daysPerWeek=5]
+ * @param {number} [daysPerWeek=CARBON.defaultDaysPerWeek]
  * @returns {{weeklyKg:number, yearlyKg:number, treesEquivalent:number}}
  */
-export function commuteSavings(fromMode, toMode, oneWayKm, daysPerWeek = 5) {
+export function commuteSavings(fromMode, toMode, oneWayKm, daysPerWeek = CARBON.defaultDaysPerWeek) {
   const from = COMMUTE_EMISSIONS[fromMode];
   const to = COMMUTE_EMISSIONS[toMode];
   if (!from || !to) throw new RangeError('Unknown commute mode');
-  const km = Math.max(0, Math.min(Number(oneWayKm) || 0, 200));
-  const days = Math.max(0, Math.min(Number(daysPerWeek) || 0, 7));
+  const km = clamp(oneWayKm, PROFILE.commuteKm.min, PROFILE.commuteKm.max);
+  const days = clamp(daysPerWeek, PROFILE.daysPerWeek.min, PROFILE.daysPerWeek.max);
   const weeklyKg = Math.max(0, (from.kgPerKm - to.kgPerKm) * km * 2 * days);
   const yearlyKg = weeklyKg * CARBON.workingWeeksPerYear;
-  return { weeklyKg: round1(weeklyKg), yearlyKg: Math.round(yearlyKg), treesEquivalent: Math.round(yearlyKg / CARBON.kgPerTreePerYear) };
+  return {
+    weeklyKg: round1(weeklyKg),
+    yearlyKg: Math.round(yearlyKg),
+    treesEquivalent: Math.round(yearlyKg / CARBON.kgPerTreePerYear),
+  };
 }
 
 /**
@@ -56,27 +80,47 @@ export function commuteSavings(fromMode, toMode, oneWayKm, daysPerWeek = 5) {
 export function estimateIndoorPm25(outdoorPm25, home = {}) {
   const outdoor = Math.max(0, Number(outdoorPm25) || 0);
   const infiltration = INFILTRATION[home.windows ?? 'closed'] ?? INFILTRATION.closed;
-  const purifierCut = home.purifier ? Math.min(Math.max(home.purifierEfficiency ?? 0.5, 0), 0.9) : 0;
+  const purifierCut = home.purifier
+    ? Math.min(Math.max(home.purifierEfficiency ?? PURIFIER.defaultEfficiency, 0), PURIFIER.maxEfficiency)
+    : 0;
   return round1(outdoor * infiltration * (1 - purifierCut));
 }
+
+/**
+ * @typedef {{
+ *   outdoorHours:number,
+ *   mask:keyof typeof MASK_FILTRATION,
+ *   windows:'open'|'closed'|'sealed',
+ *   purifier:boolean
+ * }} Habits
+ */
 
 /**
  * Daily inhaled-dose comparison between current habits and a recommended plan.
  * Dose is proportional to Σ(concentration × hours).
  * @param {number} outdoorPm25
- * @param {{outdoorHours:number, mask:keyof MASK_FILTRATION, windows:'open'|'closed'|'sealed', purifier:boolean}} before
- * @param {{outdoorHours:number, mask:keyof MASK_FILTRATION, windows:'open'|'closed'|'sealed', purifier:boolean}} after
+ * @param {Habits} before
+ * @param {Habits} after
  * @returns {{beforeDose:number, afterDose:number, reductionPercent:number}}
  */
 export function exposureReduction(outdoorPm25, before, after) {
+  /**
+   * Daily PM2.5 dose for one set of habits.
+   * @param {Habits} p
+   * @returns {number}
+   */
   const dose = (p) => {
-    const outHours = Math.max(0, Math.min(Number(p.outdoorHours) || 0, 24));
+    const outHours = clamp(p.outdoorHours, 0, DAY_HOURS);
     const maskCut = MASK_FILTRATION[p.mask] ?? 0;
     const indoor = estimateIndoorPm25(outdoorPm25, { windows: p.windows, purifier: p.purifier });
-    return outdoorPm25 * (1 - maskCut) * outHours + indoor * (24 - outHours);
+    return outdoorPm25 * (1 - maskCut) * outHours + indoor * (DAY_HOURS - outHours);
   };
   const beforeDose = dose(before);
   const afterDose = dose(after);
   const reductionPercent = beforeDose > 0 ? Math.round(((beforeDose - afterDose) / beforeDose) * 100) : 0;
-  return { beforeDose: Math.round(beforeDose), afterDose: Math.round(afterDose), reductionPercent: Math.max(0, reductionPercent) };
+  return {
+    beforeDose: Math.round(beforeDose),
+    afterDose: Math.round(afterDose),
+    reductionPercent: Math.max(0, reductionPercent),
+  };
 }

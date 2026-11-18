@@ -36,27 +36,34 @@ In winter, cities like Delhi, Lahore and Mumbai often go past AQI 300. Families 
 ## Architecture
 
 ```
-index.html ── src/app.js (controller)
-               ├── src/api.js       Open-Meteo + GenAI clients, timeouts, TTL cache
-               ├── src/plan.js      prompt builder, JSON parser/validator, offline rules engine
-               ├── src/aqi.js       EPA AQI categories, PM2.5→AQI, best windows, forecast summary
-               ├── src/impact.js    CO₂ savings, indoor PM2.5 model, exposure-dose reduction
-               ├── src/validate.js  input sanitisation & whitelisting
-               ├── src/format.js    shared pure formatters (hours, units)
-               ├── src/config.js    every limit, timeout and constant in one frozen module
-               └── src/ui.js        safe DOM rendering (textContent only), SVG chart
+index.html ── src/app.js               entry point: plan flow + controller wiring
+               ├── src/location.js         city search (radio group) + geolocation
+               ├── src/impact-calculator.js commute CO₂ calculator controller
+               ├── src/chat.js             grounded follow-up chat controller
+               ├── src/api.js              Open-Meteo + GenAI clients, timeouts, TTL cache
+               ├── src/plan.js             prompt builders + strict JSON parser/validator
+               ├── src/offline-plan.js     deterministic rules engine (AI fallback)
+               ├── src/aqi.js              EPA AQI categories, PM2.5→AQI, best windows
+               ├── src/impact.js           CO₂ savings, indoor PM2.5, exposure-dose model
+               ├── src/validate.js         input sanitisation & whitelisting
+               ├── src/format.js           pure formatters (hours, units)
+               ├── src/ui.js               safe DOM rendering (textContent only), SVG chart
+               ├── src/dom.js              typed element lookups + status region
+               ├── src/state.js            typed in-memory app state
+               └── src/config.js           every limit, threshold and constant (frozen)
 ```
 
-There's no framework and no build step: it's about 1,300 lines of vanilla ES modules, zero runtime dependencies, and the repo is under 100 KB.
+There's no framework and no build step: vanilla ES modules, zero runtime dependencies (dev tools only), and the repo is well under 1 MB.
 
 ## Evaluation criteria: how they're covered
 
 ### Code quality
-- **Single-responsibility modules**: data/network, prompt + parsing, domain maths, validation, formatting, rendering and the controller are each kept in a separate module. Pure logic has no DOM access.
-- **No magic numbers.** Every timeout, limit and constant lives in a frozen `src/config.js`.
-- **Small functions**: ESLint enforces cyclomatic complexity ≤ 12, max depth 3, ≤ 4 params and ≤ 60 lines per function. The plan generator and offline planner are split into focused helpers (`loadContext`, `requestPlan`, `buildRoutine`, `buildIndoorHacks`, `buildSwaps` and others).
-- **JSDoc on every function**, with type-checking enabled through `jsconfig.json` (`checkJs`).
-- Consistent formatting via `.editorconfig`; `no-shadow`, `eqeqeq`, `prefer-const` and `no-console` are enforced.
+- **Single-responsibility modules** (15): network, prompt/parsing, offline rules, domain maths, validation, formatting, rendering, typed DOM access, state, and one small controller per feature. Pure logic has no DOM access.
+- **Statically type-checked**: `tsc --checkJs` with `strictNullChecks`, `noUnusedLocals` and `noUnusedParameters` passes with **zero errors**. Shared shapes (`Plan`, `PlanContext`, `Profile`, `AirReading`, `ChatTurn`…) are JSDoc `@typedef`s, and DOM lookups are typed (`inputById`, `selectById`, `formById`).
+- **Lint-clean** with `@eslint/js` recommended + `eslint-plugin-jsdoc` (JSDoc with `@param`/`@returns` required on every function), complexity ≤ 10, max depth 3, ≤ 4 params, ≤ 50 lines per function, ≤ 300 lines per file.
+- **Consistently formatted** with Prettier (`npm run format:check`) and `.editorconfig`.
+- **No magic numbers**: limits, health thresholds, AI settings, profile ranges and carbon constants all live in a frozen `src/config.js`.
+- One command runs every gate: `npm run check` (lint → format → typecheck → tests), and CI runs the same steps on every push.
 
 ### Security
 - **Strict Content-Security-Policy**: `script-src 'self'`, no inline scripts or styles, `connect-src` limited to the 5 required APIs, `object-src 'none'`, `base-uri 'none'`.
@@ -72,14 +79,17 @@ There's no framework and no build step: it's about 1,300 lines of vanilla ES mod
 - The chat sends only the last 6 turns to keep prompts small.
 
 ### Testing
-- **35 unit tests** using Node's built-in `node:test`, with no dependencies to install. Line coverage is about **99.8%** and function coverage about **98.5%**.
+- **51 tests** using Node's built-in `node:test`: unit tests for every pure module plus **DOM integration tests** that load the real `index.html` into happy-dom and drive the full user flows (search, pick a city, generate a plan, impact calculator, chat, chips, geolocation, AI-down fallback). Line coverage is about **99.2%** and function coverage about **98.8%** across all 15 modules.
 - They cover AQI breakpoints, forecast windows, impact maths, validation and injection cases, prompt building, JSON parsing of malformed or hostile output, the offline planner, and API clients with mocked `fetch`, including timeouts and HTTP errors.
-- GitHub Actions CI runs the tests and ESLint on every push.
+- GitHub Actions CI runs lint, formatting, type-check and tests on every push.
 
 ```bash
+npm install             # dev tools only (ESLint, Prettier, TypeScript, happy-dom)
 npm test                # run tests
 npm run test:coverage   # with coverage
-npm run lint            # ESLint
+npm run lint            # ESLint + JSDoc rules
+npm run typecheck       # tsc --checkJs
+npm run check           # every quality gate
 npm start               # serve locally on :8080
 ```
 
