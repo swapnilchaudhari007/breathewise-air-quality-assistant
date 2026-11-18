@@ -27,7 +27,8 @@ export function describeSaving(saving) {
   return saving.weeklyKg > 0
     ? `Switching saves about ${saving.weeklyKg} kg of CO₂ every week: ${saving.yearlyKg} kg a year, ` +
         `the same as ${saving.treesEquivalent} trees absorb. It also means less exhaust on your street.`
-    : 'This switch does not reduce emissions. Try a lower-emission option such as metro, bus, cycling or walking.';
+    : 'This switch does not reduce emissions. ' +
+        'Try a lower-emission option such as metro, bus, cycling or walking.';
 }
 
 /** Recalculate and announce the CO₂ saving for the chosen switch. */

@@ -33,6 +33,7 @@ export default [
       'max-params': ['error', 4],
       'max-lines-per-function': ['error', { max: 50, skipBlankLines: true, skipComments: true }],
       'max-lines': ['error', { max: 300, skipBlankLines: true, skipComments: true }],
+      'max-len': ['error', { code: 110, ignoreUrls: true, ignoreRegExpLiterals: true }],
     },
   },
   {

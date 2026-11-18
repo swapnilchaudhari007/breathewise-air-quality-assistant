@@ -1,6 +1,7 @@
 /**
  * Deterministic, rule-based planner used when the AI is unreachable, so the
- * family always receives useful, quantified guidance.
+ * family always receives useful, quantified guidance. Each tip is chosen by a
+ * small rule function; the static wording lives in `tips.js`.
  * Pure functions — no DOM, no network.
  * @module offline-plan
  */
@@ -8,6 +9,7 @@ import { categorize, cigaretteEquivalent } from './aqi.js';
 import { commuteSavings, estimateIndoorPm25, exposureReduction, COMMUTE_EMISSIONS } from './impact.js';
 import { sanitizeText } from './validate.js';
 import { formatHour } from './format.js';
+import { tip, ROUTINE, INDOOR, SWAPS } from './tips.js';
 import { CARBON, HEALTH, LIMITS } from './config.js';
 
 /**
@@ -27,25 +29,89 @@ export function windowBenefitPercent(windowAqi, peakAqi) {
 }
 
 /**
+ * True when today's AQI is high enough to move exertion indoors.
+ * @param {number} aqi
+ * @returns {boolean}
+ */
+const isSevere = (aqi) => aqi > HEALTH.severeAqi;
+
+/**
  * Daily PM2.5 dose reduction from following the plan versus current habits.
  * @param {PlanContext} ctx
  * @returns {ReturnType<typeof exposureReduction>}
  */
 function planReduction({ air, profile }) {
-  return exposureReduction(
-    air.pm25,
-    {
-      outdoorHours: HEALTH.baselineOutdoorHours,
-      mask: 'none',
-      windows: profile.home.windows,
-      purifier: profile.home.purifier,
-    },
-    {
-      outdoorHours: air.aqi > HEALTH.severeAqi ? HEALTH.severeOutdoorHours : HEALTH.planOutdoorHours,
-      mask: 'n95',
-      windows: 'closed',
-      purifier: true,
-    },
+  const current = {
+    outdoorHours: HEALTH.baselineOutdoorHours,
+    mask: /** @type {const} */ ('none'),
+    windows: profile.home.windows,
+    purifier: profile.home.purifier,
+  };
+  const recommended = {
+    outdoorHours: isSevere(air.aqi) ? HEALTH.severeOutdoorHours : HEALTH.planOutdoorHours,
+    mask: /** @type {const} */ ('n95'),
+    windows: /** @type {const} */ ('closed'),
+    purifier: true,
+  };
+  return exposureReduction(air.pm25, current, recommended);
+}
+
+/* ---------- Routine ---------- */
+
+/**
+ * Time outdoor activity to the cleanest forecast window.
+ * @param {PlanContext['forecast']} forecast
+ * @returns {PlanItem}
+ */
+function cleanWindowTip(forecast) {
+  const best = forecast.best[0];
+  if (!best) return ROUTINE.noWindow;
+  const window = `${formatHour(best.start)}–${formatHour(best.end)}`;
+  return tip(
+    `Go outside ${window}`,
+    `Schedule walks, school runs and exercise in the cleanest window (avg AQI ${best.average}) ` +
+      `and avoid the peak around ${formatHour(forecast.peakTime)}.`,
+    `Breathing AQI ${best.average} instead of ${forecast.max} cuts pollutant intake during outdoor time ` +
+      `by ~${windowBenefitPercent(best.average, forecast.max)}%.`,
+  );
+}
+
+/**
+ * Mask advice, quantified by the whole plan's dose reduction.
+ * @param {number} reductionPercent
+ * @returns {PlanItem}
+ */
+function maskTip(reductionPercent) {
+  return tip(
+    'Wear a fitted N95 outdoors',
+    ROUTINE.maskAction,
+    `Combined with the steps below, your family's daily PM2.5 dose drops by ~${reductionPercent}%.`,
+  );
+}
+
+/**
+ * Exercise advice for active households, errands advice otherwise.
+ * @param {PlanContext} ctx
+ * @returns {PlanItem}
+ */
+function activityTip({ air, profile }) {
+  if (profile.lifestyle.exercise === 'none') return ROUTINE.errands;
+  const action = isSevere(air.aqi) ? ROUTINE.exerciseSevere : ROUTINE.exerciseMild;
+  return tip('Move workouts indoors', action, ROUTINE.exerciseImpact);
+}
+
+/**
+ * Extra protection when children, elders or people with respiratory conditions live at home.
+ * @param {PlanContext} ctx
+ * @returns {PlanItem|null}
+ */
+function vulnerableTip({ air, profile }) {
+  const { children, elderly, respiratory } = profile.household;
+  if (!children && !elderly && !respiratory) return null;
+  return tip(
+    'Protect vulnerable members',
+    ROUTINE.vulnerableAction,
+    `${categorize(air.aqi).label} air hits sensitive lungs first — staying in reduces their dose most.`,
   );
 }
 
@@ -55,54 +121,60 @@ function planReduction({ air, profile }) {
  * @returns {PlanItem[]}
  */
 function buildRoutine(ctx) {
-  const { air, forecast, profile } = ctx;
-  const cat = categorize(air.aqi);
-  const best = forecast.best[0];
-  const severe = air.aqi > HEALTH.severeAqi;
-  const { household } = profile;
-  const sensitive = household.children || household.elderly || household.respiratory;
-  const reduction = planReduction(ctx);
-  const routine = [
-    best
-      ? {
-          title: `Go outside ${formatHour(best.start)}–${formatHour(best.end)}`,
-          action: `Schedule walks, school runs and exercise in the cleanest window (avg AQI ${best.average}) and avoid the peak around ${formatHour(forecast.peakTime)}.`,
-          impact: `Breathing AQI ${best.average} instead of ${forecast.max} cuts pollutant intake during outdoor time by ~${windowBenefitPercent(best.average, forecast.max)}%.`,
-        }
-      : {
-          title: 'Limit time outdoors',
-          action: 'No clean window today — keep outdoor trips short and essential.',
-          impact: 'Every hour indoors with filtered air avoids a full hour of outdoor PM2.5.',
-        },
-    {
-      title: 'Wear a fitted N95 outdoors',
-      action: 'Use N95/FFP2 masks (not cloth) for commutes and errands; check the seal around the nose.',
-      impact: `Combined with the steps below, your family's daily PM2.5 dose drops by ~${reduction.reductionPercent}%.`,
-    },
-    profile.lifestyle.exercise !== 'none'
-      ? {
-          title: 'Move workouts indoors',
-          action: severe
-            ? 'Switch running and cycling to indoor yoga or bodyweight workouts until AQI falls below 100.'
-            : 'Exercise lightly outdoors only in the clean window; heavy breathing multiplies intake.',
-          impact:
-            'Intense exercise raises breathing rate up to 10×, so moving it indoors avoids most of that extra dose.',
-        }
-      : {
-          title: 'Plan errands smartly',
-          action: 'Batch shopping and errands into a single trip during the clean window.',
-          impact: 'Fewer trips mean less exposure and fewer vehicle emissions.',
-        },
+  const items = [
+    cleanWindowTip(ctx.forecast),
+    maskTip(planReduction(ctx).reductionPercent),
+    activityTip(ctx),
+    vulnerableTip(ctx),
   ];
-  if (sensitive) {
-    routine.push({
-      title: 'Protect vulnerable members',
-      action:
-        'Keep children, elders and anyone with asthma indoors during peak hours; keep inhalers handy and seek a doctor if breathing worsens.',
-      impact: `${cat.label} air hits sensitive lungs first — staying in reduces their dose most.`,
-    });
-  }
-  return routine;
+  return items.filter((item) => item !== null);
+}
+
+/* ---------- Indoor ---------- */
+
+/**
+ * Window strategy with the estimated indoor PM2.5 change.
+ * @param {PlanContext} ctx
+ * @returns {PlanItem}
+ */
+function windowsTip({ air, forecast, profile }) {
+  const { windows, purifier } = profile.home;
+  const best = forecast.best[0];
+  const now = estimateIndoorPm25(air.pm25, { windows, purifier });
+  const closed = estimateIndoorPm25(air.pm25, { windows: 'closed', purifier });
+  return tip(
+    windows === 'open' ? 'Close windows at peak hours' : 'Keep windows closed',
+    `Ventilate only for 10–15 minutes during ${best ? formatHour(best.start) : 'the cleanest hour'}; ` +
+      'seal gaps with door snakes or weather strips.',
+    `Lowers indoor PM2.5 from ~${now} to ~${closed} µg/m³.`,
+  );
+}
+
+/**
+ * Purifier advice (use it well, or build a DIY one) with the filtered estimate.
+ * @param {PlanContext} ctx
+ * @returns {PlanItem}
+ */
+function purifierTip({ air, profile }) {
+  const { windows, purifier } = profile.home;
+  const now = estimateIndoorPm25(air.pm25, { windows, purifier });
+  const filtered = estimateIndoorPm25(air.pm25, { windows: 'closed', purifier: true });
+  return tip(
+    purifier ? 'Run purifier on high' : 'Add a HEPA filter (DIY works)',
+    purifier ? INDOOR.purifierOwned : INDOOR.purifierDiy,
+    `A HEPA/MERV-13 filter brings indoor PM2.5 to ~${filtered} µg/m³ ` +
+      `(≈${cigaretteEquivalent(filtered)} cigarettes/day instead of ${cigaretteEquivalent(now)}).`,
+  );
+}
+
+/**
+ * Indoor smoke advice tailored to the cooking fuel.
+ * @param {PlanContext['profile']} profile
+ * @returns {PlanItem}
+ */
+function smokeTip(profile) {
+  const action = profile.lifestyle.cooking === 'biomass' ? INDOOR.smokeBiomass : INDOOR.smokeDefault;
+  return tip(INDOOR.smokeTitle, action, INDOOR.smokeImpact);
 }
 
 /**
@@ -110,41 +182,31 @@ function buildRoutine(ctx) {
  * @param {PlanContext} ctx
  * @returns {PlanItem[]}
  */
-function buildIndoorHacks({ air, forecast, profile }) {
-  const best = forecast.best[0];
-  const indoorNow = estimateIndoorPm25(air.pm25, {
-    windows: profile.home.windows,
-    purifier: profile.home.purifier,
-  });
-  const indoorBetter = estimateIndoorPm25(air.pm25, { windows: 'closed', purifier: true });
-  return [
-    {
-      title: profile.home.windows === 'open' ? 'Close windows at peak hours' : 'Keep windows closed',
-      action: `Ventilate only for 10–15 minutes during ${best ? formatHour(best.start) : 'the cleanest hour'}; seal gaps with door snakes or weather strips.`,
-      impact: `Lowers indoor PM2.5 from ~${indoorNow} to ~${estimateIndoorPm25(air.pm25, { windows: 'closed', purifier: profile.home.purifier })} µg/m³.`,
-    },
-    {
-      title: profile.home.purifier ? 'Run purifier on high' : 'Add a HEPA filter (DIY works)',
-      action: profile.home.purifier
-        ? 'Keep the purifier in the bedroom at night, doors closed, and change filters on schedule.'
-        : 'Strap a MERV-13 filter to a box fan (a ~₹2,500 DIY purifier) and run it in the room where you sleep.',
-      impact: `A HEPA/MERV-13 filter brings indoor PM2.5 to ~${indoorBetter} µg/m³ (≈${cigaretteEquivalent(indoorBetter)} cigarettes/day instead of ${cigaretteEquivalent(indoorNow)}).`,
-    },
-    {
-      title: 'Cut indoor smoke sources',
-      action:
-        profile.lifestyle.cooking === 'biomass'
-          ? 'Shift from wood/coal to LPG or induction; until then cook with the exhaust on and the door shut.'
-          : 'Use the kitchen chimney/exhaust while cooking; avoid incense, mosquito coils and candles.',
-      impact:
-        'Incense and frying can spike indoor PM2.5 above 300 µg/m³ for hours — removing them is a free, instant win.',
-    },
-    {
-      title: 'Wet-clean dust daily',
-      action: 'Mop floors and wipe surfaces with a damp cloth instead of sweeping; keep shoes at the door.',
-      impact: 'Wet cleaning traps settled particles instead of resuspending them into the air you breathe.',
-    },
-  ];
+function buildIndoorHacks(ctx) {
+  return [windowsTip(ctx), purifierTip(ctx), smokeTip(ctx.profile), INDOOR.wetClean];
+}
+
+/* ---------- Sustainable swaps ---------- */
+
+/**
+ * Quantified commute swap, or praise for an already-clean commute.
+ * @param {PlanContext['profile']} profile
+ * @returns {PlanItem}
+ */
+function commuteTip({ commute }) {
+  const target = commute.km <= HEALTH.cycleMaxKm ? 'cycle' : 'metro';
+  const from = COMMUTE_EMISSIONS[commute.mode];
+  const to = COMMUTE_EMISSIONS[target];
+  if (from.kgPerKm <= to.kgPerKm) return SWAPS.cleanCommute;
+  const saving = commuteSavings(commute.mode, target, commute.km, CARBON.defaultDaysPerWeek);
+  return tip(
+    `Swap ${from.label.toLowerCase()} for ${to.label.toLowerCase()}`,
+    `Take ${to.label.toLowerCase()} for your ${commute.km} km commute, ` +
+      'or work from home on severe-smog days.',
+    `Saves ~${saving.weeklyKg} kg CO₂ a week ` +
+      `(${saving.yearlyKg} kg/yr ≈ ${saving.treesEquivalent} trees) ` +
+      'and removes tailpipe emissions from your street.',
+  );
 }
 
 /**
@@ -153,43 +215,26 @@ function buildIndoorHacks({ air, forecast, profile }) {
  * @returns {PlanItem[]}
  */
 function buildSwaps(profile) {
-  const mode = profile.commute.mode;
-  const target = profile.commute.km <= HEALTH.cycleMaxKm ? 'cycle' : 'metro';
-  const swaps = [];
-  if (COMMUTE_EMISSIONS[mode].kgPerKm > COMMUTE_EMISSIONS[target].kgPerKm) {
-    const s = commuteSavings(mode, target, profile.commute.km, CARBON.defaultDaysPerWeek);
-    swaps.push({
-      title: `Swap ${COMMUTE_EMISSIONS[mode].label.toLowerCase()} for ${COMMUTE_EMISSIONS[target].label.toLowerCase()}`,
-      action: `Take ${COMMUTE_EMISSIONS[target].label.toLowerCase()} for your ${profile.commute.km} km commute, or work from home on severe-smog days.`,
-      impact: `Saves ~${s.weeklyKg} kg CO₂ a week (${s.yearlyKg} kg/yr ≈ ${s.treesEquivalent} trees) and removes tailpipe emissions from your street.`,
-    });
-  } else {
-    swaps.push({
-      title: 'Keep your clean commute',
-      action: 'Your commute is already low-emission — encourage colleagues to car-pool or use transit.',
-      impact: 'Each car taken off the road avoids ~3.4 kg CO₂ per 20 km round trip.',
-    });
-  }
-  swaps.push(
-    {
-      title: 'Never burn waste or leaves',
-      action:
-        'Compost kitchen and garden waste and report open burning in your area to the municipal helpline.',
-      impact: 'Open burning is a major winter PM2.5 source; one pile can pollute a whole street for hours.',
-    },
-    {
-      title: 'Grow air-friendly greenery',
-      action:
-        'Plant native trees or shrubs on balconies and society compounds; a green barrier helps beside busy roads.',
-      impact: 'Roadside hedges can lower nearby particulate levels by up to ~20% while absorbing CO₂.',
-    },
-    {
-      title: 'Choose energy-efficient heating',
-      action: 'Avoid coal/wood heaters; use efficient electric heaters with timers and seal drafts instead.',
-      impact: 'Cuts household emissions and indoor smoke at the same time.',
-    },
+  return [commuteTip(profile), ...SWAPS.community];
+}
+
+/* ---------- Plan ---------- */
+
+/**
+ * One-paragraph summary of today's air and the plan's overall benefit.
+ * @param {PlanContext} ctx
+ * @returns {string}
+ */
+function summarize(ctx) {
+  const { air } = ctx;
+  const cat = categorize(air.aqi);
+  const place = sanitizeText(ctx.place, LIMITS.place);
+  const { reductionPercent } = planReduction(ctx);
+  return (
+    `Air in ${place} is ${cat.label.toLowerCase()} (AQI ${air.aqi}, PM2.5 ${air.pm25} µg/m³ ` +
+    `≈ ${cigaretteEquivalent(air.pm25)} cigarettes/day). ${cat.advice} ` +
+    `Following this plan can cut your family's daily exposure by about ${reductionPercent}%.`
   );
-  return swaps;
 }
 
 /**
@@ -198,14 +243,17 @@ function buildSwaps(profile) {
  * @returns {Plan}
  */
 export function buildOfflinePlan(ctx) {
-  const { air } = ctx;
-  const cat = categorize(air.aqi);
-  const reduction = planReduction(ctx);
+  /**
+   * Keep at most `LIMITS.planItems` items.
+   * @param {PlanItem[]} items
+   * @returns {PlanItem[]}
+   */
+  const cap = (items) => items.slice(0, LIMITS.planItems);
   return {
-    summary: `Air in ${sanitizeText(ctx.place, LIMITS.place)} is ${cat.label.toLowerCase()} (AQI ${air.aqi}, PM2.5 ${air.pm25} µg/m³ ≈ ${cigaretteEquivalent(air.pm25)} cigarettes/day). ${cat.advice} Following this plan can cut your family's daily exposure by about ${reduction.reductionPercent}%.`,
-    routine: buildRoutine(ctx).slice(0, LIMITS.planItems),
-    indoor: buildIndoorHacks(ctx).slice(0, LIMITS.planItems),
-    alternatives: buildSwaps(ctx.profile).slice(0, LIMITS.planItems),
+    summary: summarize(ctx),
+    routine: cap(buildRoutine(ctx)),
+    indoor: cap(buildIndoorHacks(ctx)),
+    alternatives: cap(buildSwaps(ctx.profile)),
     source: 'offline',
   };
 }

@@ -136,6 +136,7 @@ function isDaytimeWindow(iso, length, startHour, endHour) {
  * @returns {T[]}
  */
 function pickNonOverlapping(sorted, length, limit) {
+  /** @type {T[]} */
   const chosen = [];
   for (const candidate of sorted) {
     if (chosen.length >= limit) break;
@@ -185,12 +186,23 @@ export function bestWindows(times, values, opts = {}) {
 }
 
 /**
+ * @typedef {{time:string, aqi:number}} ForecastPoint
+ * @typedef {{
+ *   min:number,
+ *   max:number,
+ *   average:number,
+ *   peakTime:string|null,
+ *   points:ForecastPoint[]
+ * }} ForecastSummary
+ */
+
+/**
  * Summarise the next `hours` of an hourly AQI forecast.
  * @param {string[]} times
  * @param {number[]} values
  * @param {number} [hours=24]
  * @param {Date} [now=new Date()]
- * @returns {{min:number, max:number, average:number, peakTime:string|null, points:{time:string, aqi:number}[]}}
+ * @returns {ForecastSummary}
  */
 export function summarizeForecast(times, values, hours = 24, now = new Date()) {
   const points = [];

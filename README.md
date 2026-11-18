@@ -42,7 +42,9 @@ index.html ── src/app.js               entry point: plan flow + controller w
                ├── src/chat.js             grounded follow-up chat controller
                ├── src/api.js              Open-Meteo + GenAI clients, timeouts, TTL cache
                ├── src/plan.js             prompt builders + strict JSON parser/validator
+               ├── src/prompts.js          system-prompt wording (persona, JSON contract)
                ├── src/offline-plan.js     deterministic rules engine (AI fallback)
+               ├── src/tips.js             static advice copy used by the rules engine
                ├── src/aqi.js              EPA AQI categories, PM2.5→AQI, best windows
                ├── src/impact.js           CO₂ savings, indoor PM2.5, exposure-dose model
                ├── src/validate.js         input sanitisation & whitelisting
@@ -58,9 +60,9 @@ There's no framework and no build step: vanilla ES modules, zero runtime depende
 ## Evaluation criteria: how they're covered
 
 ### Code quality
-- **Single-responsibility modules** (15): network, prompt/parsing, offline rules, domain maths, validation, formatting, rendering, typed DOM access, state, and one small controller per feature. Pure logic has no DOM access.
-- **Statically type-checked**: `tsc --checkJs` with `strictNullChecks`, `noUnusedLocals` and `noUnusedParameters` passes with **zero errors**. Shared shapes (`Plan`, `PlanContext`, `Profile`, `AirReading`, `ChatTurn`…) are JSDoc `@typedef`s, and DOM lookups are typed (`inputById`, `selectById`, `formById`).
-- **Lint-clean** with `@eslint/js` recommended + `eslint-plugin-jsdoc` (JSDoc with `@param`/`@returns` required on every function), complexity ≤ 10, max depth 3, ≤ 4 params, ≤ 50 lines per function, ≤ 300 lines per file.
+- **Single-responsibility modules** (17): network, prompt wording, message building/parsing, offline rules, advice copy, domain maths, validation, formatting, rendering, typed DOM access, state, and one small controller per feature. Pure logic has no DOM access.
+- **Statically type-checked in full strict mode**: `tsc --checkJs` with `strict: true`, `noUnusedLocals` and `noUnusedParameters` passes with **zero errors** (no implicit `any`). Shared shapes (`Plan`, `PlanContext`, `Profile`, `AirReading`, `ChatTurn`…) are JSDoc `@typedef`s, and DOM lookups are typed (`inputById`, `selectById`, `formById`).
+- **Lint-clean** with `@eslint/js` recommended + `eslint-plugin-jsdoc` (JSDoc with `@param`/`@returns` required on every function), complexity ≤ 10, max depth 3, ≤ 4 params, ≤ 50 lines per function, ≤ 300 lines per file, ≤ 110 characters per line.
 - **Consistently formatted** with Prettier (`npm run format:check`) and `.editorconfig`.
 - **No magic numbers**: limits, health thresholds, AI settings, profile ranges and carbon constants all live in a frozen `src/config.js`.
 - One command runs every gate: `npm run check` (lint → format → typecheck → tests), and CI runs the same steps on every push.
@@ -79,7 +81,7 @@ There's no framework and no build step: vanilla ES modules, zero runtime depende
 - The chat sends only the last 6 turns to keep prompts small.
 
 ### Testing
-- **51 tests** using Node's built-in `node:test`: unit tests for every pure module plus **DOM integration tests** that load the real `index.html` into happy-dom and drive the full user flows (search, pick a city, generate a plan, impact calculator, chat, chips, geolocation, AI-down fallback). Line coverage is about **99.2%** and function coverage about **98.8%** across all 15 modules.
+- **51 tests** using Node's built-in `node:test`: unit tests for every pure module plus **DOM integration tests** that load the real `index.html` into happy-dom and drive the full user flows (search, pick a city, generate a plan, impact calculator, chat, chips, geolocation, AI-down fallback). Line coverage is about **99.2%** and function coverage about **98.8%** across all 17 modules.
 - They cover AQI breakpoints, forecast windows, impact maths, validation and injection cases, prompt building, JSON parsing of malformed or hostile output, the offline planner, and API clients with mocked `fetch`, including timeouts and HTTP errors.
 - GitHub Actions CI runs lint, formatting, type-check and tests on every push.
 

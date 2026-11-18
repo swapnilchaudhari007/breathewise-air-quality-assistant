@@ -49,7 +49,7 @@ function svg(tag, attrs = {}, text) {
 }
 
 /**
- * @typedef {{time:string, aqi:number}} ForecastPoint
+ * @typedef {import('./aqi.js').ForecastPoint} ForecastPoint
  * @typedef {{max:number, barW:number, y:(v:number) => number}} ChartScale
  */
 

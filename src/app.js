@@ -37,14 +37,15 @@ function readProfile() {
 
 /**
  * One-line forecast summary, with a smog warning when the wind is low.
- * @param {ReturnType<typeof summarizeForecast>} forecast
+ * @param {import('./aqi.js').ForecastSummary} forecast
  * @param {number|undefined} wind km/h
  * @returns {string}
  */
 export function describeForecast(forecast, wind) {
   if (forecast.points.length === 0) return 'Hourly forecast unavailable.';
   const lowWind = wind != null && wind < FORECAST.lowWindKmh ? ' Low wind means smog can build up.' : '';
-  return `AQI will range from ${forecast.min} to ${forecast.max}, peaking around ${formatHour(forecast.peakTime)}.${lowWind}`;
+  const peak = formatHour(forecast.peakTime);
+  return `AQI will range from ${forecast.min} to ${forecast.max}, peaking around ${peak}.${lowWind}`;
 }
 
 /**
@@ -77,20 +78,21 @@ function renderCurrentAir(ctx) {
 /**
  * Render the 24h chart summary and the cleanest outdoor windows.
  * @param {import('./plan.js').PlanContext} ctx
- * @param {ReturnType<typeof summarizeForecast>} forecast
+ * @param {import('./aqi.js').ForecastSummary} forecast
  */
 function renderForecast(ctx, forecast) {
   byId('forecast-summary').textContent = describeForecast(forecast, ctx.weather?.wind);
   renderForecastChart(byId('forecast-chart'), forecast.points);
-  const items = ctx.forecast.best.map((w, i) =>
-    el('li', {}, [
-      el('strong', {}, [i === 0 ? 'Best time outdoors: ' : 'Next best: ']),
-      `${formatHour(w.start)} – ${formatHour(addHours(w.end, 1))} (avg AQI ${w.average}, ${categorize(w.average).label})`,
-    ]),
-  );
-  byId('best-windows').replaceChildren(
-    ...(items.length ? items : [el('li', {}, ['No clean daytime window today — keep outdoor time short.'])]),
-  );
+  const items = ctx.forecast.best.map((w, i) => {
+    const hours = `${formatHour(w.start)} – ${formatHour(addHours(w.end, 1))}`;
+    const label = i === 0 ? 'Best time outdoors: ' : 'Next best: ';
+    return el('li', {}, [
+      el('strong', {}, [label]),
+      `${hours} (avg AQI ${w.average}, ${categorize(w.average).label})`,
+    ]);
+  });
+  const fallback = el('li', {}, ['No clean daytime window today — keep outdoor time short.']);
+  byId('best-windows').replaceChildren(...(items.length ? items : [fallback]));
 }
 
 /**
@@ -111,7 +113,7 @@ function renderPlan(plan, provider) {
  * Fetch live data and build the grounded plan context.
  * @param {import('./state.js').Place} place
  * @param {import('./validate.js').Profile} profile
- * @returns {Promise<{ctx: import('./plan.js').PlanContext, forecast: ReturnType<typeof summarizeForecast>}>}
+ * @returns {Promise<{ctx: import('./plan.js').PlanContext, forecast: import('./aqi.js').ForecastSummary}>}
  */
 async function loadContext(place, profile) {
   const data = await fetchConditions(place.lat, place.lon);

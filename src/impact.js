@@ -7,7 +7,12 @@
 
 import { CARBON, PROFILE } from './config.js';
 
-/** Approximate tailpipe/lifecycle CO₂ per passenger-km (kg), India-centric averages. */
+/** @typedef {{label:string, kgPerKm:number}} CommuteMode */
+
+/**
+ * Approximate tailpipe/lifecycle CO₂ per passenger-km (kg), India-centric averages.
+ * @type {Readonly<Record<string, CommuteMode>>}
+ */
 export const COMMUTE_EMISSIONS = Object.freeze({
   car: { label: 'Petrol/diesel car', kgPerKm: 0.17 },
   'two-wheeler': { label: 'Two-wheeler', kgPerKm: 0.07 },

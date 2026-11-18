@@ -11,6 +11,8 @@ import { AI, NETWORK } from './config.js';
  * @typedef {{aqi:number, pm25:number, pm10?:number, no2?:number, o3?:number}} AirReading
  * @typedef {{temperature?:number, wind?:number}} WeatherReading
  * @typedef {{text:string, provider:string}} ModelReply
+ * @typedef {{name:string, admin1?:string, country?:string, latitude:number, longitude:number}} GeocodeResult
+ * @typedef {{text?:string}} GeminiPart
  * @typedef {import('./plan.js').ChatMessage} ChatMessage
  */
 
@@ -54,7 +56,10 @@ export class TtlCache {
    */
   set(key, value, now = Date.now()) {
     this.store.set(key, { value, expires: now + this.ttlMs });
-    if (this.store.size > NETWORK.cacheMaxEntries) this.store.delete(this.store.keys().next().value);
+    if (this.store.size > NETWORK.cacheMaxEntries) {
+      const oldest = this.store.keys().next().value;
+      if (oldest !== undefined) this.store.delete(oldest);
+    }
   }
 }
 
@@ -75,7 +80,9 @@ export async function fetchJson(url, options = {}) {
     if (!res.ok) throw new Error(`Request failed (${res.status})`);
     return await res.json();
   } catch (err) {
-    if (err?.name === 'AbortError') throw new Error('The request timed out. Please try again.');
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('The request timed out. Please try again.');
+    }
     throw err;
   } finally {
     clearTimeout(timer);
@@ -112,7 +119,9 @@ export async function geocodeCity(query, fetchImpl) {
     format: 'json',
   });
   const data = await cachedJson(`${ENDPOINTS.geocode}?${params}`, fetchImpl);
-  return (data.results ?? [])
+  /** @type {GeocodeResult[]} */
+  const results = Array.isArray(data.results) ? data.results : [];
+  return results
     .filter((r) => isValidCoordinate(r.latitude, r.longitude))
     .map((r) => ({
       name: [r.name, r.admin1, r.country].filter(Boolean).join(', '),
@@ -230,8 +239,9 @@ async function askGemini(messages, geminiKey, { fetchImpl, json }) {
       },
     }),
   });
+  /** @type {GeminiPart[]} */
   const parts = data.candidates?.[0]?.content?.parts ?? [];
-  return { text: parts.map((p) => p.text).join(''), provider: AI.geminiLabel };
+  return { text: parts.map((p) => p.text ?? '').join(''), provider: AI.geminiLabel };
 }
 
 /**
